@@ -106,6 +106,75 @@ func (allocator *Allocator) findNextCollector() *collector {
 	return col
 }
 
+// balanceTargets sorts the collectors into two lists: those too far below the
+// average of targets per collector and those at the average. Then the function
+// iterates through the targets and moves them from collectors with too many
+// targets to collectors with too few targets.
+func (allocator *Allocator) balanceTargets() {
+	// we can't divide by 0
+	if len(allocator.collectors) == 0 {
+		return
+	}
+	var (
+		avg          int
+		aboveAvgDiff int
+		belowAvgDiff int
+		belowAvg     []*collector
+		backup       []*collector
+	)
+	avg = len(allocator.targetItems) / len(allocator.collectors)
+
+	for _, c := range allocator.collectors {
+		if c.NumTargets > avg+1 {
+			aboveAvgDiff += c.NumTargets - avg + 1
+		} else if c.NumTargets < avg {
+			belowAvg = append(belowAvg, c)
+			belowAvgDiff += avg - c.NumTargets
+		} else if c.NumTargets == avg {
+			backup = append(backup, c)
+		}
+	}
+
+	for _, t := range allocator.targetItems {
+		// once we don't have any collectors with too many or too few targets,
+		// we're done.
+		if belowAvgDiff == 0 && aboveAvgDiff == 0 {
+			return
+		}
+		if t.Collector.NumTargets > avg+1 {
+			t.Collector.NumTargets--
+			targetsPerCollector.WithLabelValues(t.Collector.Name).Set(float64(t.Collector.NumTargets))
+			if aboveAvgDiff > belowAvgDiff {
+				t.Collector = backup[0]
+				backup = backup[1:]
+			} else {
+				t.Collector = belowAvg[0]
+				// if we reach the average, move the collector from the below
+				// average list to the backup list.
+				if t.Collector.NumTargets+1 == avg {
+					belowAvg = belowAvg[1:]
+					backup = append(backup, t.Collector)
+				}
+				belowAvgDiff--
+			}
+			aboveAvgDiff--
+			t.Collector.NumTargets++
+			targetsPerCollector.WithLabelValues(t.Collector.Name).Set(float64(t.Collector.NumTargets))
+		} else if t.Collector.NumTargets > avg && belowAvgDiff > aboveAvgDiff {
+			t.Collector = belowAvg[0]
+			// if we reach the average, move the collector from the below
+			// average list to the backup list.
+			if t.Collector.NumTargets+1 == avg {
+				belowAvg = belowAvg[1:]
+				backup = append(backup, t.Collector)
+			}
+			belowAvgDiff--
+			t.Collector.NumTargets++
+			targetsPerCollector.WithLabelValues(t.Collector.Name).Set(float64(t.Collector.NumTargets))
+		}
+	}
+}
+
 // addTargetToTargetItems assigns a target to the next available collector and adds it to the allocator's targetItems
 // This method is called from within SetTargets and SetCollectors, whose caller acquires the needed lock.
 // This is only called after the collectors are cleared or when a new target has been found in the tempTargetMap
@@ -180,6 +249,8 @@ func (allocator *Allocator) SetTargets(targets []TargetItem) {
 			allocator.addTargetToTargetItems(&target)
 		}
 	}
+
+	allocator.balanceTargets()
 }
 
 // SetCollectors sets the set of collectors with key=collectorName, value=Collector object.
@@ -226,6 +297,8 @@ func (allocator *Allocator) SetCollectors(collectors []string) {
 	for _, item := range redistribute {
 		allocator.addTargetToTargetItems(item)
 	}
+
+	allocator.balanceTargets()
 }
 
 func NewAllocator(log logr.Logger) *Allocator {
