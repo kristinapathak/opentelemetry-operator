@@ -36,11 +36,7 @@ func ConfigMap(params manifests.Params) (*corev1.ConfigMap, error) {
 	version := strings.Split(params.OpAMPBridge.Spec.Image, ":")
 	labels := manifestutils.Labels(params.OpAMPBridge.ObjectMeta, name, params.OpAMPBridge.Spec.Image, ComponentOpAMPBridge, []string{})
 
-	if len(version) > 1 {
-		labels["app.kubernetes.io/version"] = version[len(version)-1]
-	} else {
-		labels["app.kubernetes.io/version"] = "latest"
-	}
+	labels["app.kubernetes.io/version"] = parseVersion(version)
 
 	config := make(map[interface{}]interface{})
 
@@ -77,3 +73,14 @@ func ConfigMap(params manifests.Params) (*corev1.ConfigMap, error) {
 		},
 	}, nil
 }
+
+func parseVersion(version []string) string {
+	if len(version < 1) {
+		return "latest"
+	}
+	v := version[len(version)-1]
+	// if it's a sha256, keep the last 12 characters
+	if len(version) > 2 && strings.HasSuffix(version[len(version)-2], "sha256") && len(v) == 64 {
+		return v[52:]
+	}
+	return naming.Truncate("%s", 63, v)
